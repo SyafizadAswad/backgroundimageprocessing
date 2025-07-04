@@ -1,10 +1,8 @@
 @echo off
-REM Activate venv and run Streamlit app
+cd /d "%~dp0"
+call .venv\Scripts\activate.bat
+streamlit run imageprocessing_JP.py
 
-IF EXIST ".venv\Scripts\activate.bat" (
-    call .venv\Scripts\activate.bat
-    streamlit run imageprocessing_JP.py
-) ELSE (
-    echo 仮想環境(.venv)が見つかりません。先にセットアップを行ってください。
-    pause
-)
+echo.
+echo Streamlit app exited. Press any key to close.
+pause > nul
