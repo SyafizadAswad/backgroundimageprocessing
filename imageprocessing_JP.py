@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # GPU最適化画像処理アプリ
 
-# test_gpu_optimized_japanese.py
+# imageprocessing_JP.py
 #
 # このスクリプトは、Streamlitを使用して画像を処理するローカルWebアプリケーションを作成します。
 # ユーザーは以下ができます：
