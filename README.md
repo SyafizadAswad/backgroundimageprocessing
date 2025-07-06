@@ -6,6 +6,11 @@ Streamlitベースの日本語画像ブランディングアプリ（GPU対応�
 
 ## 🚀 セットアップガイド
 
+本アプリは、以下のプログラムが必須となりますので、
+事前にインストールしてください。
+・Python 3.7+
+・pip
+
 ### 1. リポジトリのクローン
 ```bash
 git clone https://github.com/yourusername/your-repo-name.git
