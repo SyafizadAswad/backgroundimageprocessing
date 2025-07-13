@@ -3,6 +3,8 @@ pillow
 backgroundremover
 torch
 torchvision
+numpy
+streamlit-paste-button
 
 # For GPU support (CUDA), install with:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 

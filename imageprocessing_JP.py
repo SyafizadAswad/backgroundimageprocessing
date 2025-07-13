@@ -28,6 +28,7 @@ import io
 import time
 import torch
 import os
+from streamlit_paste_button import paste_image_button
 
 # --- 設定と定数 ---
 OUTPUT_SIZE = 1000
@@ -67,6 +68,42 @@ def resize_image_for_processing(image_bytes, max_size=MAX_INPUT_SIZE):
         return image_bytes
 
 # --- コア画像処理関数 ---
+
+def crop_and_center_object(image, canvas_size=1000, padding=10, alpha_threshold=200):
+    import numpy as np
+    img_array = np.array(image)
+    if len(img_array.shape) == 3 and img_array.shape[2] == 4:
+        alpha = img_array[:, :, 3]
+        non_transparent = np.where(alpha > alpha_threshold)
+    else:
+        alpha = np.ones((img_array.shape[0], img_array.shape[1])) * 255
+        non_transparent = np.where(alpha > 0)
+    if len(non_transparent[0]) == 0:
+        # fallback: center the whole image
+        final_canvas = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 255))
+        image.thumbnail((canvas_size, canvas_size), Image.Resampling.LANCZOS)
+        paste_x = (canvas_size - image.width) // 2
+        paste_y = (canvas_size - image.height) // 2
+        final_canvas.paste(image, (paste_x, paste_y), image)
+        return final_canvas
+    min_y, max_y = non_transparent[0].min(), non_transparent[0].max()
+    min_x, max_x = non_transparent[1].min(), non_transparent[1].max()
+    # Expand the box by padding, but keep within image bounds
+    min_y = max(0, min_y - padding)
+    max_y = min(image.height - 1, max_y + padding)
+    min_x = max(0, min_x - padding)
+    max_x = min(image.width - 1, max_x + padding)
+    # Crop the object
+    cropped = image.crop((min_x, min_y, max_x + 1, max_y + 1))
+    # Create a new white canvas
+    final_canvas = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 255))
+    # Resize cropped object if it's too big
+    cropped.thumbnail((canvas_size, canvas_size), Image.Resampling.LANCZOS)
+    # Center the cropped object
+    paste_x = (canvas_size - cropped.width) // 2
+    paste_y = (canvas_size - cropped.height) // 2
+    final_canvas.paste(cropped, (paste_x, paste_y), cropped)
+    return final_canvas
 
 def process_image(main_image_bytes, logo_image_bytes, text_inputs, logo_position, text_positions, use_gpu=True):
     """
@@ -109,20 +146,18 @@ def process_image(main_image_bytes, logo_image_bytes, text_inputs, logo_position
 
         # ステップ3: 白い背景の新しい空白キャンバスを作成。
         # 透明な貼り付けを可能にするためRGBAを使用。
-        final_canvas = Image.new("RGBA", (OUTPUT_SIZE, OUTPUT_SIZE), (255, 255, 255, 255))
+        # final_canvas = Image.new("RGBA", (OUTPUT_SIZE, OUTPUT_SIZE), (255, 255, 255, 255))
 
         # ステップ4: アスペクト比を維持しながら、キャンバス内に収まるように前景画像をリサイズ。
         # `thumbnail`メソッドは画像をその場でリサイズする。
         foreground_copy = foreground_image.copy()
         foreground_copy.thumbnail((OUTPUT_SIZE, OUTPUT_SIZE), Image.Resampling.LANCZOS)
 
-        # ステップ5: 前景画像をキャンバスの中央に配置するための座標を計算。
-        paste_x = (OUTPUT_SIZE - foreground_copy.width) // 2
-        paste_y = (OUTPUT_SIZE - foreground_copy.height) // 2
+        # --- Improved centering: crop to object and center on canvas ---
+        final_canvas = crop_and_center_object(foreground_copy, OUTPUT_SIZE, padding=10, alpha_threshold=200)
 
-        # ステップ6: リサイズされた前景をキャンバスの中央に貼り付け。
-        # 3番目の引数（画像自体）は透明度を処理するマスクとして機能する。
-        final_canvas.paste(foreground_copy, (paste_x, paste_y), foreground_copy)
+        # --- Continue with logo and text as before ---
+        # (Removed old centering and pasting logic)
 
         # ステップ7: ロゴが提供されている場合は追加。
         if logo_image_bytes:
@@ -195,7 +230,17 @@ def process_image(main_image_bytes, logo_image_bytes, text_inputs, logo_position
                         # 各行を描画
                         for line in wrapped_lines:
                             if line.strip():  # 空でない行のみ描画
-                                draw.text((text_x, text_y), line, font=font, fill=(0, 0, 0, 255))
+                                if position == 'Bottom Center':
+                                    bbox = draw.textbbox((0, 0), line, font=font)
+                                    text_width = bbox[2] - bbox[0]
+                                    adjusted_x = (OUTPUT_SIZE - text_width) // 2
+                                elif 'Right' in position:
+                                    bbox = draw.textbbox((0, 0), line, font=font)
+                                    text_width = bbox[2] - bbox[0]
+                                    adjusted_x = text_x + (max_width - text_width)
+                                else:
+                                    adjusted_x = text_x
+                                draw.text((adjusted_x, text_y), line, font=font, fill=(0, 0, 0, 255))
                             text_y += line_height
 
         # より広い互換性のためRGBに変換（例：JPEGとして保存）。
@@ -206,19 +251,72 @@ def process_image(main_image_bytes, logo_image_bytes, text_inputs, logo_position
         print(f"画像処理エラー: {e}")
         return None
 
+def center_product_content(image, canvas_size):
+    """
+    画像内の実際の商品内容（非透明部分）を検出し、キャンバス内で適切に中央配置する座標を計算する。
+    
+    Args:
+        image (PIL.Image): RGBA画像（背景除去済み）
+        canvas_size (int): キャンバスのサイズ（正方形）
+    
+    Returns:
+        tuple: (x, y) 座標
+    """
+    # 画像をnumpy配列に変換してアルファチャンネルを取得
+    import numpy as np
+    img_array = np.array(image)
+    
+    if len(img_array.shape) == 3 and img_array.shape[2] == 4:
+        # RGBA画像の場合、アルファチャンネルを使用
+        alpha = img_array[:, :, 3]
+        threshold = 250 # より厳しめの閾値で半透明部分を無視
+        non_transparent = np.where(alpha > threshold)
+    else:
+        # RGB画像の場合、すべてのピクセルを不透明として扱う
+        alpha = np.ones((img_array.shape[0], img_array.shape[1])) * 255
+        non_transparent = np.where(alpha > 0)
+    
+    if len(non_transparent[0]) == 0:
+        # 透明ピクセルしかない場合は、画像全体を中央に配置
+        return (canvas_size - image.width) // 2, (canvas_size - image.height) // 2
+    
+    # 非透明部分の境界を計算
+    min_y, max_y = non_transparent[0].min(), non_transparent[0].max()
+    min_x, max_x = non_transparent[1].min(), non_transparent[1].max()
+    
+    # 実際の商品内容の中心を計算
+    content_center_x = (min_x + max_x) // 2
+    content_center_y = (min_y + max_y) // 2
+    
+    # キャンバスの中心
+    canvas_center = canvas_size // 2
+    
+    # 商品内容の中心がキャンバスの中心に来るように画像全体を移動
+    offset_x = canvas_center - content_center_x
+    offset_y = canvas_center - content_center_y
+    
+    # 画像がキャンバスからはみ出さないように調整
+    final_x = max(0, min(offset_x, canvas_size - image.width))
+    final_y = max(0, min(offset_y, canvas_size - image.height))
+    
+    return final_x, final_y
+
 def calculate_position(position, item_width, item_height, is_logo, logo_height=0):
     """
     選択された角に基づいてアイテムの(x, y)座標を計算する。
     下部の場合は常にキャンバスの端に固定されるように修正。
     """
-    if 'Right' in position:
-        x = OUTPUT_SIZE - item_width - PADDING
-    else:  # Left
-        x = PADDING
-
-    if 'Bottom' in position:
+    if position == 'Bottom Center':
+        x = (OUTPUT_SIZE - item_width) // 2
         y = OUTPUT_SIZE - item_height - PADDING
-    else:  # Top
+    elif 'Right' in position:
+        x = OUTPUT_SIZE - item_width - PADDING
+        y = OUTPUT_SIZE - item_height - PADDING if 'Bottom' in position else PADDING
+    elif 'Left' in position:
+        x = PADDING
+        y = OUTPUT_SIZE - item_height - PADDING if 'Bottom' in position else PADDING
+    else:  # Default to Top
+        x = (OUTPUT_SIZE - item_width) // 2
         y = PADDING
     return x, y
 
@@ -249,10 +347,34 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.header("⚙️ 入力")
+    st.subheader("1. メイン画像をアップロード・貼り付け")
+    # Paste from clipboard button
+    pasted_image = paste_image_button("クリップボードから画像を貼り付け")
+    
+    # Show a mini preview if an image was pasted
+    if pasted_image is not None:
+        img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
+        if img is not None:
+            st.image(img, caption="貼り付けた画像プレビュー", width=200)
+    
+    # File uploader fallback
     main_image_file = st.file_uploader(
-        "1. メイン画像をアップロード",
+        "画像をアップロード（ドラッグ＆ドロップまたはファイル選択）",
         type=['png', 'jpg', 'jpeg', 'webp']
     )
+
+    # Use whichever is provided (priority: pasted > file)
+    main_image_bytes = None
+    if pasted_image is not None:
+        import io
+        buf = io.BytesIO()
+        img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
+        if img is not None:
+            img.save(buf, format="PNG")
+            main_image_bytes = buf.getvalue()
+    elif main_image_file is not None:
+        main_image_bytes = main_image_file.getvalue()
+
     logo_image_file = st.file_uploader(
         "2. ロゴをアップロード（オプション）",
         type=['png', 'jpg', 'jpeg', 'webp']
@@ -287,8 +409,8 @@ with col1:
         with col_pos:
             st.session_state.text_inputs[i]['position'] = st.selectbox(
                 "位置",
-                ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'),
-                index=('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left').index(text_data['position']),
+                ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center'),
+                index=('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center').index(text_data['position']),
                 key=f"text_position_{i}"
             )
     
@@ -330,9 +452,8 @@ with col1:
 
 with col2:
     st.header("✅ 結果")
-    if process_button and main_image_file:
+    if process_button and main_image_bytes:
         with st.spinner('処理中... しばらくお待ちください。'):
-            main_image_bytes = main_image_file.getvalue()
             logo_image_bytes = logo_image_file.getvalue() if logo_image_file else None
             
             # ロゴ位置を取得（ロゴがない場合はNone）

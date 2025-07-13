@@ -37,6 +37,10 @@ pip install -r requirements_gpu.txt
 > requirements_gpu.txt には PyTorch（CUDA対応）などGPU用パッケージが含まれています。  
 > NVIDIA GPUと対応ドライバが必要です。
 
+> **新規依存パッケージ**  
+> - `numpy`（画像処理のため）
+> - `streamlit-paste-button`（クリップボードからの画像貼り付け対応）
+
 ### 4. フォントファイルの確認
 `NotoSansJP-Regular.ttf` がプロジェクトディレクトリにあることを確認してください。  
 このフォントは日本語テキストの描画に使用されます。
@@ -68,6 +72,7 @@ streamlit run imageprocessing_JP.py
 - 日本語が□で表示される場合は、`NotoSansJP-Regular.ttf` が存在するか確認してください。
 - GPUが認識されない場合は、NVIDIAドライバやCUDA、PyTorchのバージョンを確認してください。
 - 背景除去が動作しない場合は、U^2-Netモデルファイルの配置を確認してください。
+- クリップボード貼り付けが動作しない場合は、Google ChromeやMicrosoft Edgeなどの最新ブラウザを使用してください。
 
 ---
 
@@ -75,6 +80,7 @@ streamlit run imageprocessing_JP.py
 - [Streamlit公式ドキュメント](https://docs.streamlit.io/)
 - [Noto Sans JPフォント](https://fonts.google.com/noto/specimen/Noto+Sans+JP)
 - [U^2-Netモデル](https://github.com/xuebinqin/U-2-Net/releases)
+- [streamlit-paste-button (クリップボード貼り付け対応)](https://discuss.streamlit.io/t/new-component-streamlit-paste-button-effortless-image-pasting-in-your-streamlit-apps/58978)
 
 ---
 
