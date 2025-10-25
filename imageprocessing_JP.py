@@ -29,6 +29,8 @@ import time
 import torch
 import os
 from streamlit_paste_button import paste_image_button
+import PyPDF2
+import fitz  # PyMuPDF for visual PDF rendering
 
 # --- 設定と定数 ---
 OUTPUT_SIZE = 1000
@@ -153,11 +155,7 @@ def process_image(main_image_bytes, logo_image_bytes, text_inputs, logo_position
         foreground_copy = foreground_image.copy()
         foreground_copy.thumbnail((OUTPUT_SIZE, OUTPUT_SIZE), Image.Resampling.LANCZOS)
 
-        # --- Improved centering: crop to object and center on canvas ---
         final_canvas = crop_and_center_object(foreground_copy, OUTPUT_SIZE, padding=10, alpha_threshold=200)
-
-        # --- Continue with logo and text as before ---
-        # (Removed old centering and pasting logic)
 
         # ステップ7: ロゴが提供されている場合は追加。
         if logo_image_bytes:
@@ -320,16 +318,142 @@ def calculate_position(position, item_width, item_height, is_logo, logo_height=0
         y = PADDING
     return x, y
 
+# --- PDF処理関数 ---
+
+def process_pdf(pdf_bytes, target_word="特記事項"):
+    """
+    PDFファイルを処理し、指定された単語を含むページを削除してから画像に変換する。
+    視覚的なPDFレンダリングを使用して画像とテキストを保持。
+    
+    Args:
+        pdf_bytes (bytes): PDFファイルのバイトデータ
+        target_word (str): 削除対象の単語（デフォルト: "特記事項"）
+    
+    Returns:
+        list: 処理済みPIL画像オブジェクトのリスト
+    """
+    try:
+        # PyMuPDFを使用してPDFを開く
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        # 各ページをチェックして、target_wordを含むページを特定
+        pages_to_keep = []
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+            text = page.get_text()
+            if target_word not in text:
+                pages_to_keep.append(page_num)
+        
+        st.info(f"'{target_word}'を含む{len(pdf_document) - len(pages_to_keep)}ページを削除しました")
+        
+        if not pages_to_keep:
+            st.warning("すべてのページが削除されました。PDFに有効なページがありません。")
+            pdf_document.close()
+            return []
+        
+        # 残りのページを高解像度で画像に変換
+        processed_images = []
+        for page_num in pages_to_keep:
+            page = pdf_document[page_num]
+            
+            # 高解像度でページを画像に変換
+            # 2倍の解像度でレンダリングしてから1000x1000にリサイズ
+            mat = fitz.Matrix(2.0, 2.0)  # 2倍の解像度
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.tobytes("png")
+            
+            # PIL画像に変換
+            img = Image.open(io.BytesIO(img_data))
+            
+            # 1000x1000にリサイズ（アスペクト比を維持、クロップなし）
+            resized_img = resize_pdf_page_to_square(img, OUTPUT_SIZE)
+            processed_images.append(resized_img)
+        
+        pdf_document.close()
+        return processed_images
+        
+    except Exception as e:
+        st.error(f"PDF処理中にエラーが発生しました: {e}")
+        return []
+
+def resize_pdf_page_to_square(image, size):
+    """
+    PDFページを正方形にリサイズし、白い背景を追加する。
+    アスペクト比を維持し、クロップしない。
+    
+    Args:
+        image (PIL.Image): リサイズする画像
+        size (int): 出力サイズ（正方形）
+    
+    Returns:
+        PIL.Image: リサイズされた画像
+    """
+    # 元の画像のアスペクト比を計算
+    original_width, original_height = image.size
+    aspect_ratio = original_width / original_height
+    
+    # 正方形のキャンバスを作成
+    canvas = Image.new("RGB", (size, size), (255, 255, 255))
+    
+    # アスペクト比を維持しながらリサイズ
+    if aspect_ratio > 1:  # 横長の場合
+        new_width = size
+        new_height = int(size / aspect_ratio)
+    else:  # 縦長の場合
+        new_width = int(size * aspect_ratio)
+        new_height = size
+    
+    # 画像をリサイズ
+    resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # キャンバスの中央に配置
+    x = (size - new_width) // 2
+    y = (size - new_height) // 2
+    canvas.paste(resized_image, (x, y))
+    
+    return canvas
+
+def resize_to_square(image, size):
+    """
+    画像を正方形にリサイズし、白い背景を追加する。
+    
+    Args:
+        image (PIL.Image): リサイズする画像
+        size (int): 出力サイズ（正方形）
+    
+    Returns:
+        PIL.Image: リサイズされた画像
+    """
+    # アスペクト比を維持しながらリサイズ
+    image.thumbnail((size, size), Image.Resampling.LANCZOS)
+    
+    # 白い背景の正方形キャンバスを作成
+    canvas = Image.new("RGB", (size, size), (255, 255, 255))
+    
+    # 画像を中央に配置
+    x = (size - image.width) // 2
+    y = (size - image.height) // 2
+    canvas.paste(image, (x, y))
+    
+    return canvas
+
 # --- Streamlitユーザーインターフェース ---
 
-st.set_page_config(layout="wide", page_title="GPU最適化画像ブランディングツール")
+st.set_page_config(layout="wide", page_title="GPU最適化画像・PDF処理ツール")
 
-st.title("GPU最適化画像ブランディングツール")
+st.title("GPU最適化画像・PDF処理ツール")
 st.markdown("""
-このツールは、GPUアクセラレーションを使用してオンラインストアやソーシャルメディア用の画像を準備するのに役立ちます。
+このツールは、GPUアクセラレーションを使用してオンラインストアやソーシャルメディア用の画像を準備し、PDFファイルを処理するのに役立ちます。
+
+**画像処理機能:**
 1.  **商品画像をアップロード**して背景を自動削除。
 2.  オプションで、**ロゴをアップロード**し、**テキストを追加**してブランディング。
 3.  最終画像は、白い背景のきれいな**1000x1000px**の正方形になります。
+
+**PDF処理機能:**
+1.  **PDFファイルをアップロード**して特定の単語を含むページを自動削除。
+2.  残りのページを**1000x1000px**のPNG画像に変換。
+3.  各ページを個別にダウンロード可能。
 """)
 
 # GPU/CPUステータスをチェックして表示
@@ -347,92 +471,126 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.header("⚙️ 入力")
-    st.subheader("1. メイン画像をアップロード・貼り付け")
-    # Paste from clipboard button
-    pasted_image = paste_image_button("クリップボードから画像を貼り付け")
+    st.subheader("1. ファイルをアップロード・貼り付け")
     
-    # Show a mini preview if an image was pasted
-    if pasted_image is not None:
-        img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
-        if img is not None:
-            st.image(img, caption="貼り付けた画像プレビュー", width=200)
-    
-    # File uploader fallback
-    main_image_file = st.file_uploader(
-        "画像をアップロード（ドラッグ＆ドロップまたはファイル選択）",
-        type=['png', 'jpg', 'jpeg', 'webp']
-    )
-
-    # Use whichever is provided (priority: pasted > file)
-    main_image_bytes = None
-    if pasted_image is not None:
-        import io
-        buf = io.BytesIO()
-        img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
-        if img is not None:
-            img.save(buf, format="PNG")
-            main_image_bytes = buf.getvalue()
-    elif main_image_file is not None:
-        main_image_bytes = main_image_file.getvalue()
-
-    logo_image_file = st.file_uploader(
-        "2. ロゴをアップロード（オプション）",
-        type=['png', 'jpg', 'jpeg', 'webp']
+    # 処理タイプを選択
+    processing_type = st.radio(
+        "処理タイプを選択:",
+        ["画像処理", "PDF処理"],
+        horizontal=True
     )
     
-    # ロゴの位置決め
-    if logo_image_file:
-        logo_position = st.selectbox(
-            "3. ロゴの位置を選択",
-            ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'),
-            key="logo_position"
+    if processing_type == "画像処理":
+        # Paste from clipboard button
+        pasted_image = paste_image_button("クリップボードから画像を貼り付け")
+        
+        # Show a mini preview if an image was pasted
+        if pasted_image is not None:
+            img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
+            if img is not None:
+                st.image(img, caption="貼り付けた画像プレビュー", width=200)
+        
+        # File uploader for images
+        main_image_file = st.file_uploader(
+            "画像をアップロード（ドラッグ＆ドロップまたはファイル選択）",
+            type=['png', 'jpg', 'jpeg', 'webp']
+        )
+        
+        # Use whichever is provided (priority: pasted > file)
+        main_image_bytes = None
+        if pasted_image is not None:
+            import io
+            buf = io.BytesIO()
+            img = getattr(pasted_image, 'data', None) or getattr(pasted_image, 'image_data', None)
+            if img is not None:
+                img.save(buf, format="PNG")
+                main_image_bytes = buf.getvalue()
+        elif main_image_file is not None:
+            main_image_bytes = main_image_file.getvalue()
+    
+    else:  # PDF処理
+        # PDF file uploader
+        pdf_file = st.file_uploader(
+            "PDFファイルをアップロード（ドラッグ＆ドロップまたはファイル選択）",
+            type=['pdf']
+        )
+        
+        # PDF処理用の設定
+        if pdf_file:
+            st.subheader("PDF処理設定")
+            target_word = st.text_input(
+                "削除するページに含まれる単語:",
+                value="特記事項",
+                help="この単語を含むページが削除されます"
+            )
+            pdf_bytes = pdf_file.getvalue()
+
+    # 画像処理の場合のみロゴとテキスト設定を表示
+    if processing_type == "画像処理":
+        logo_image_file = st.file_uploader(
+            "2. ロゴをアップロード（オプション）",
+            type=['png', 'jpg', 'jpeg', 'webp']
         )
     
-    # テキスト入力セクション
-    st.subheader("4. テキストを追加（オプション）")
-    
-    # セッション状態でテキスト入力を初期化
-    if 'text_inputs' not in st.session_state:
-        st.session_state.text_inputs = [{'text': '', 'position': 'Top Right'}]
-    
-    # テキスト入力フィールドを追加
-    for i, text_data in enumerate(st.session_state.text_inputs):
-        col_text, col_pos = st.columns([3, 1])
-        with col_text:
-            st.session_state.text_inputs[i]['text'] = st.text_area(
-                f"テキスト {i+1}",
-                value=text_data['text'],
-                placeholder="ここにテキストを入力...\n改行するにはEnterキーを使用",
-                height=100,
-                key=f"text_input_{i}"
+        # ロゴの位置決め
+        if logo_image_file:
+            logo_position = st.selectbox(
+                "3. ロゴの位置を選択",
+                ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'),
+                key="logo_position"
             )
-        with col_pos:
-            st.session_state.text_inputs[i]['position'] = st.selectbox(
-                "位置",
-                ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center'),
-                index=('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center').index(text_data['position']),
-                key=f"text_position_{i}"
-            )
-    
-    # テキスト追加/削除ボタン
-    col_add, col_remove = st.columns(2)
-    with col_add:
-        if st.button("テキストを追加"):
-            st.session_state.text_inputs.append({'text': '', 'position': 'Top Right'})
-            st.rerun()
-    
-    with col_remove:
-        if len(st.session_state.text_inputs) > 1 and st.button("最後のテキストを削除"):
-            st.session_state.text_inputs.pop()
-            st.rerun()
+        
+        # テキスト入力セクション
+        st.subheader("4. テキストを追加（オプション）")
+        
+        # セッション状態でテキスト入力を初期化
+        if 'text_inputs' not in st.session_state:
+            st.session_state.text_inputs = [{'text': '', 'position': 'Top Right'}]
+        
+        # テキスト入力フィールドを追加
+        for i, text_data in enumerate(st.session_state.text_inputs):
+            col_text, col_pos = st.columns([3, 1])
+            with col_text:
+                st.session_state.text_inputs[i]['text'] = st.text_area(
+                    f"テキスト {i+1}",
+                    value=text_data['text'],
+                    placeholder="ここにテキストを入力...\n改行するにはEnterキーを使用",
+                    height=100,
+                    key=f"text_input_{i}"
+                )
+            with col_pos:
+                st.session_state.text_inputs[i]['position'] = st.selectbox(
+                    "位置",
+                    ('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center'),
+                    index=('Top Right', 'Top Left', 'Bottom Right', 'Bottom Left', 'Bottom Center').index(text_data['position']),
+                    key=f"text_position_{i}"
+                )
+        
+        # テキスト追加/削除ボタン
+        col_add, col_remove = st.columns(2)
+        with col_add:
+            if st.button("テキストを追加"):
+                st.session_state.text_inputs.append({'text': '', 'position': 'Top Right'})
+                st.rerun()
+        
+        with col_remove:
+            if len(st.session_state.text_inputs) > 1 and st.button("最後のテキストを削除"):
+                st.session_state.text_inputs.pop()
+                st.rerun()
     
     # ダウンロード用のカスタムファイル名入力（処理前）
     st.subheader("5. ダウンロード用ファイル名")
-    default_filename = "processed_image"
+    if processing_type == "画像処理":
+        default_filename = "processed_image"
+        help_text = "ファイルはPNG画像として保存されます"
+    else:
+        default_filename = "processed_pdf"
+        help_text = "各ページがPNG画像として保存されます"
+    
     custom_filename = st.text_input(
         "ダウンロード用ファイル名を入力（拡張子なし）:",
         value=default_filename,
-        help="ファイルはPNG画像として保存されます"
+        help=help_text
     )
     
     # ファイル名をクリーンアップ（無効な文字を削除）
@@ -441,18 +599,27 @@ with col1:
     if not clean_filename:
         clean_filename = default_filename
     
-    # GPU/CPU選択
-    if gpu_available:
-        use_gpu = st.checkbox("GPUアクセラレーションを使用（高速）", value=True)
+    # GPU/CPU選択（画像処理の場合のみ）
+    if processing_type == "画像処理":
+        if gpu_available:
+            use_gpu = st.checkbox("GPUアクセラレーションを使用（高速）", value=True)
+        else:
+            use_gpu = False
+            st.info("GPUが利用できません - CPUを使用します")
     else:
-        use_gpu = False
-        st.info("GPUが利用できません - CPUを使用します")
+        use_gpu = False  # PDF処理ではGPUは使用しない
 
-    process_button = st.button("✨ 画像を処理", type="primary")
+    # 処理ボタン
+    if processing_type == "画像処理":
+        process_button = st.button("✨ 画像を処理", type="primary")
+    else:
+        process_button = st.button("✨ PDFを処理", type="primary")
 
 with col2:
     st.header("✅ 結果")
-    if process_button and main_image_bytes:
+    
+    # 画像処理の場合
+    if processing_type == "画像処理" and process_button and main_image_bytes:
         with st.spinner('処理中... しばらくお待ちください。'):
             logo_image_bytes = logo_image_file.getvalue() if logo_image_file else None
             
@@ -468,9 +635,17 @@ with col2:
             )
             # ダウンロード用ファイル名を保存
             st.session_state.download_filename = clean_filename
-
-    # セッション状態から画像を表示
-    if st.session_state.processed_image:
+    
+    # PDF処理の場合
+    elif processing_type == "PDF処理" and process_button and pdf_file:
+        with st.spinner('PDF処理中... しばらくお待ちください。'):
+            # PDFを処理
+            processed_images = process_pdf(pdf_bytes, target_word)
+            st.session_state.processed_pdf_images = processed_images
+            st.session_state.download_filename = clean_filename
+    
+    # 画像処理結果の表示
+    if processing_type == "画像処理" and st.session_state.processed_image:
         st.image(st.session_state.processed_image, caption="処理済み画像", use_column_width=True)
         
         # ダウンロードボタン用にPIL画像をバイトに変換
@@ -487,6 +662,34 @@ with col2:
             file_name=f"{download_filename}.png",
             mime="image/png"
         )
+    
+    # PDF処理結果の表示
+    elif processing_type == "PDF処理" and hasattr(st.session_state, 'processed_pdf_images') and st.session_state.processed_pdf_images:
+        st.success(f"PDF処理完了！{len(st.session_state.processed_pdf_images)}ページの画像が生成されました。")
+        
+        # 各ページの画像を表示
+        for i, img in enumerate(st.session_state.processed_pdf_images):
+            st.image(img, caption=f"ページ {i+1}", use_column_width=True)
+            
+            # 各ページのダウンロードボタン
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+            
+            download_filename = getattr(st.session_state, 'download_filename', 'processed_pdf')
+            
+            st.download_button(
+                label=f"📥 ページ {i+1} をダウンロード",
+                data=img_bytes,
+                file_name=f"{download_filename}_page_{i+1}.png",
+                mime="image/png",
+                key=f"download_page_{i}"
+            )
+    
+    # 初期状態のメッセージ
     else:
-        st.info("画像をアップロードして「画像を処理」をクリックすると、ここに結果が表示されます。")
+        if processing_type == "画像処理":
+            st.info("画像をアップロードして「画像を処理」をクリックすると、ここに結果が表示されます。")
+        else:
+            st.info("PDFファイルをアップロードして「PDFを処理」をクリックすると、ここに結果が表示されます。")
 
